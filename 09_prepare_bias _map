@@ -1,0 +1,148 @@
+library(tidyverse)
+library(terra)
+library(sf)
+library(viridis)
+library(rnaturalearth)
+library(scico)
+library(patchwork)
+
+###### Temporal bias ####
+
+dTB <- readRDS("dTB.rds")
+
+###### Taxonomic bias ####
+
+
+compr <- readRDS("compr.rds")
+
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+df.r <- as.data.frame(r, xy=TRUE)
+colnames(df.r)<- c("x","y","id")
+
+# following codes standardize the number of grid cells
+
+NNI.NNI_SES <- readRDS("NNI.NNI_SES.rds")
+NNI <- NNI.NNI_SES %>% dplyr::select(id, nni) %>% unique() %>% drop_na()
+cells <- NNI$id
+ctr <- as.data.frame(xyFromCell(r, cells))
+
+ctr <- ctr %>% 
+  st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+  st_transform(crs = st_crs(3035))
+
+# extract completeness values from the centroids coordinates of NNI values at 39.5 km of spatial resolution
+
+Vcompr <- extract(compr, ctr)
+
+NNI_COMP <- cbind(NNI, Completeness=Vcompr$last) %>% 
+  drop_na() %>% 
+  dplyr::select(id, nni, Completeness)
+
+NNI_COMP_EV <- NNI_COMP %>% inner_join(., dTB, by="id")%>% dplyr::select(id, nni, Completeness, J) %>% inner_join(., df.r, by="id")
+
+colnames(NNI_COMP_EV) <- c("id","nni","comp","J","x","y")
+
+###### raster of completeness, NNI, and temporal evenness
+
+NNI_COMP_EV <- NNI_COMP_EV%>% 
+  st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+  st_transform(crs = st_crs(3035))
+
+
+v <- vect(NNI_COMP_EV)
+NNI_COMP_EVsr <- rasterize(v, r, field=c("nni","comp","J"))
+
+
+
+NNI_COMP_EVssp <- as.polygons(NNI_COMP_EVsr, dissolve=FALSE)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world <- world %>% st_transform(crs = st_crs(3035))
+
+NNI_COMP_EVssp %>% 
+  st_as_sf () %>%  
+  ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+  geom_sf(aes(fill = J))+
+  scale_fill_viridis(option='viridis',direction = 1,alpha = 0.7)+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "C", fill = "Pielou's Index") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot3
+
+
+
+
+NNI_COMP_EVssp %>% 
+  st_as_sf () %>%  
+  ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+  geom_sf(aes(fill =comp))+
+  scale_fill_viridis(option='viridis',direction = 1,alpha = 0.7)+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "A", fill = "Completeness") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot1
+
+NNI_COMP_EVssp %>% 
+  st_as_sf () %>%  
+  ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+  geom_sf(aes(fill =nni))+
+  scale_fill_scico(palette='vik',direction = 1,alpha = 0.7, midpoint=1)+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "B", fill = "NNI") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot2
+
+p <- plot1 + plot2 + plot3
+
+ggsave(plot = p,
+       filename = "mapTOT.jpg",
+       width = 18,
+       height = 12,
+       dpi = 600)
