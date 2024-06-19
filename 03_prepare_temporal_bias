@@ -1,0 +1,103 @@
+library(tidyverse)
+library(vegan) # version ‘2.6.6’
+library(viridis)
+library(rnaturalearth)
+library(sf)
+library(terra)
+
+d <- readRDS("d.rds")
+
+d$Year <- as.numeric(d$Year)
+
+#dataframe with the number of plots per year within each grid cell
+
+dd <- d %>% dplyr::select(id, PlotObservationID, Year) %>% unique() %>%
+  group_by(id, Year) %>%
+  mutate(nPlotY = n()) %>%
+  ungroup() %>%
+  drop_na()
+
+# create wide temporal data.frame
+
+dd %>% dplyr::select(-PlotObservationID)%>%  
+  unique%>%
+  mutate(Year=as.numeric(Year)) %>% 
+  pivot_wider(names_from = Year,values_from = nPlotY) %>% 
+  dplyr::select(id, order(colnames(.))) %>% 
+  as.data.frame() -> ddWide
+
+ddWide[is.na(ddWide)] <- 0
+
+
+
+
+# calcluate Pielou's evenness
+
+df <- data.frame(S=rowSums(ddWide[,2:24]),
+                 H=diversity(ddWide[,2:24]))
+df$J <- df$H/log(df$S)
+df$id <- ddWide$id 
+dTB <- df %>% drop_na()%>%
+       dplyr::select(id, J)
+saveRDS(dTB, "dTB.rds")
+
+### plot J index ####
+
+
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+df.r <- as.data.frame(r, xy=TRUE)
+#df.r <- df.r %>%cbind(id=r.sf$lyr.1)
+colnames(df.r)<- c("x","y","id")
+
+
+dTB <- dTB %>% inner_join(., df.r, by="id")%>%
+  st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+  st_transform(crs = st_crs(3035))
+
+
+v <- vect(dTB)
+dTBr <- rasterize(v, r, field="J")
+
+rm(v)
+
+## spatial polygons of world's countries
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+world <- world %>% st_transform(crs = st_crs(3035))
+
+dTB_sp <- as.polygons(dTBr, dissolve=FALSE)
+dTB_sp %>% 
+  st_as_sf () %>%  
+  ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+ geom_sf(aes(fill = last))+
+  scale_fill_viridis(option='viridis',direction = 1,alpha = 0.7)+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "Pielou's evenness", fill = "Pielou's Index") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot
+
+
+ggsave(plot = plot,
+       filename = "Pielou.jpg",
+       width = 10,
+       height = 10,
+       dpi = 600)
