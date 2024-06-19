@@ -1,0 +1,135 @@
+library(tidyverse)
+library(iNEXT) # version ‘3.0.1’
+library(sf)
+library(viridis) # version ‘0.6.5’
+library(rnaturalearth) # version ‘1.0.1’
+library(terra)
+
+#### Completeness per grids with incidence data
+
+d <- readRDS("d.rds")
+
+# adding incidence value for each record
+
+d$records <- 1
+
+# nested dataframe of species, plots, records per id (grid cell)
+
+d_matrix <- d %>%
+  dplyr::select(Species, PlotObservationID, records, id)%>%
+  unique() %>%
+  group_by(id)%>%
+  nest()
+
+# community matrix IDplots x species
+
+matrix_next <- function(x)
+  {
+  m <- pivot_wider(x, names_from =Species, values_from = records, id_cols=PlotObservationID, values_fill = 0) %>% unique()
+  return(m)
+}
+
+md <- map(d_matrix$data, ~ matrix_next(.x))
+
+# to remove grid cells with only 1 or 2 plots
+
+single_row_indices <- sapply(md, function(df) nrow(df) %in% c(1, 2))
+
+d_matrix <- d_matrix %>% cbind(na = single_row_indices) %>% filter(!na=="TRUE") %>% dplyr::select(-na) %>% filter(!id==2947)
+md <- map(d_matrix$data, ~ matrix_next(.x))
+
+# function to create the indicence frequence of the species
+
+list_next <- function(x)
+{
+  names(x) <- NULL
+  l <- colSums(x[, 2:ncol(x)])
+ l <- c(nrow(x), l)
+  return(l)
+}
+
+ld <- map(md, ~ list_next(.x))
+
+inext <- function(x)
+{
+  ld_sr <- iNEXT(x, q=0, datatype="incidence_freq", knots = 5)
+  return( ld_sr)
+}
+
+rm(md)
+
+ld_sr <- map(ld, ~ inext(.x))
+
+df_sc <- function(x)
+{
+  ld_sc <- data.frame(SC1=x$DataInfo$SC)
+  return( ld_sc)
+}
+
+rm(ld)
+
+ld_sc <- map(ld_sr, ~ df_sc(.x)) 
+ld_sc <- as.data.frame(unlist(ld_sc))
+ld_sc <- ld_sc %>% rename(SC=`unlist(ld_sc)`)
+d_matrix_sc <- d_matrix %>% cbind(ld_sc) %>% unnest(cols = c(data))
+ 
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+df.r <- as.data.frame(r, xy=TRUE)
+colnames(df.r)<- c("x","y","id")
+
+# sf points of the centroids of the grid cells with related completeness of the species richness value
+
+comp <- d %>% dplyr::select(-id) %>% 
+        inner_join(., d_matrix_sc, by="PlotObservationID")%>%
+        inner_join(., df.r, by="id")%>%
+        st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+        st_transform(crs = st_crs(3035))
+
+saveRDS(comp, "comp.rds")
+comp <- comp %>% dplyr::select(geometry, SC) %>% unique() 
+
+# from vector to raster of completeness
+
+v <- vect(comp)
+compr <- rasterize(v, r, field="SC")
+
+rm(v)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world <- world %>% st_transform(crs = st_crs(3035))
+
+compr_sp <- as.polygons(compr, dissolve=FALSE)
+compr_sp %>% 
+  st_as_sf () %>%  
+ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+  geom_sf(aes(fill =last))+
+  scale_fill_viridis(option='viridis',direction = 1,alpha = 0.7)+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "Completeness", fill = "Completeness") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot
+
+ggsave(plot = plot,
+       filename = "comp.jpg",
+       width = 10,
+       height = 10,
+       dpi = 600)
