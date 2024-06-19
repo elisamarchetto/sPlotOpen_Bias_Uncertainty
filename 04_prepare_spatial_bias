@@ -1,0 +1,414 @@
+library(tidyverse)
+library(spatstat) # version ‘3.0.8’
+library(terra)
+library(sf)
+library(rnaturalearth)
+library(scico) # version ‘1.5.0’
+
+d <- readRDS("d.rds")
+
+##### spatstat functions #####
+clarkevans <- function(X, correction=c("none", "Donnelly", "cdf"),
+                       clipregion=NULL)
+{
+  verifyclass(X, "ppp")
+  W <- X$window
+
+  # validate correction argument
+  gavecorrection <- !missing(correction)
+  correction <- pickoption("correction", correction,
+                           c(none="none",
+                             Donnelly="Donnelly",
+                             donnelly="Donnelly",
+                             guard="guard",
+                             cdf="cdf"),
+                           multi=TRUE)
+
+  if(("Donnelly" %in% correction) && (W$type != "rectangle")) {
+    if(gavecorrection)
+      warning("Donnelly correction only available for rectangular windows")
+    correction <- correction[correction != "Donnelly"]
+  }
+
+  # guard correction applied iff `clipregion' is present
+  isguard <- "guard" %in% correction
+  askguard <- any(isguard)
+  gaveguard <- !is.null(clipregion)
+  if(gaveguard)
+    clipregion <- as.owin(clipregion)
+  if(askguard && !gaveguard) {
+    warning("guard correction not performed; clipregion not specified")
+    correction <- correction[!isguard]
+  } else if(gaveguard && !askguard) 
+    correction <- c(correction, "guard")
+
+  result <- clarkevansCalc(X, correction, clipregion)
+  if(length(result) == 1L) result <- unname(result)
+  return(result)
+}
+
+clarkevans.test2 <- function(X, ..., 
+                            correction,
+                            clipregion=NULL,
+                            alternative=c("two.sided", "less", "greater",
+                                          "clustered", "regular"),
+                            method = c("asymptotic", "MonteCarlo"),
+                            nsim=999
+) {
+  require(spatstat.utils)
+  Xname <- short.deparse(substitute(X))
+  miss.nsim <- missing(nsim)
+  method <- match.arg(method)
+  
+  verifyclass(X, "ppp")
+  W <- Window(X)
+  nX <- npoints(X)
+  
+  if(missing(correction) || is.null(correction)) {
+    correction <- switch(method,
+                         MonteCarlo = "none",
+                         asymptotic = if(is.rectangle(W)) "Donnelly" else "cdf")
+  } else {
+    #' validate SINGLE correction
+    correction <- pickoption("correction", correction,
+                             c(none="none",
+                               Donnelly="Donnelly",
+                               donnelly="Donnelly",
+                               guard="guard",
+                               cdf="cdf"))
+  }
+  
+  switch(correction,
+         none={
+           corrblurb <- "No edge correction"
+         },
+         Donnelly={
+           if(W$type != "rectangle")
+             stop("Donnelly correction only available for rectangular windows")
+           corrblurb <- "Donnelly correction"
+         },
+         guard={
+           if(is.null(clipregion))
+             stop("clipregion not specified")
+           clipregion <- as.owin(clipregion)
+           corrblurb <- "Guard correction"
+         },
+         cdf={
+           corrblurb <- "CDF correction"
+         })
+  
+  # alternative hypothesis
+  if(missing(alternative) || is.null(alternative))
+    alternative <- "two.sided"
+  alternative <- pickoption("alternative", alternative,
+                            c(two.sided="two.sided",
+                              less="less",
+                              clustered="less",
+                              greater="greater",
+                              regular="greater"))
+  
+  altblurb <-
+    switch(alternative,
+           two.sided="two-sided",
+           less="clustered (R < 1)",
+           greater="regular (R > 1)")
+  
+  # compute observed value
+  statistic <- clarkevansCalc(X, correction=correction, clipregion=clipregion,
+                              working=TRUE)
+  working <- attr(statistic, "working")
+  #
+  switch(method,
+         asymptotic = {
+           #' use asymptotic standard Normal reference
+           #' get appropriate standard error
+           SE.R <- switch(correction,
+                          none     = working[["SEnaive"]],
+                          guard    = working[["SEguard"]],
+                          Donnelly = working[["SEkevin"]],
+                          cdf      = working[["SEcdf"]])
+           #' standardised test statistic
+           Z <- as.numeric((statistic - 1)/SE.R)
+           p.value <- switch(alternative,
+                             less=pnorm(Z),
+                             greater=1 - pnorm(Z),
+                             two.sided= 2*(1-pnorm(abs(Z))))
+           pvblurb <- "Z-test"
+         },
+         MonteCarlo = {
+           #' Monte Carlo p-value
+           sims <- numeric(nsim)
+           for(i in seq_len(nsim)) {
+             Xsim <- runifpoint(nX, win=W)
+             sims[i] <- clarkevansCalc(Xsim, correction=correction,
+                                       clipregion=clipregion)
+           }
+           p.upper <- (1 + sum(sims >= statistic))/(1.0 + nsim)
+           p.lower <- (1 + sum(sims <= statistic))/(1.0 + nsim)
+           p.value <- switch(alternative,
+                             less=p.lower,
+                             greater=p.upper,
+                             two.sided=min(1, 2*min(p.lower, p.upper)))
+           pvblurb <- paste("Monte Carlo test based on",
+                            nsim, "simulations of CSR with fixed n")
+         })
+  
+  statistic <- as.numeric(statistic)
+  names(statistic) <- "R"
+  
+  statistic <- as.numeric(statistic)
+  names(statistic) <- "R"
+  statistic.SES <- (statistic - mean(sims, na.rm=TRUE))/sd(sims, na.rm=TRUE) ## na.rm=TRUE to avoid NaN of sims
+  out <- list(statistic = statistic, p.value = p.value, alternative = altblurb, 
+              method = c("Clark-Evans test", corrblurb, pvblurb), data.name = Xname,  
+              sims=sims, 
+              statistic.SES=statistic.SES)
+  class(out) <- "htest"
+  return(out)
+}
+
+
+clarkevansCalc <- function(X, correction="none", clipregion=NULL,
+                           working=FALSE) {
+  # calculations for Clark-Evans index or test
+  W <- Window(X)
+  areaW <- area.owin(W)
+  npts <- npoints(X)
+  intensity <- npts/areaW
+  # R undefined for empty point pattern
+  if(npts == 0)
+    return(NA)
+  # Dobs = observed mean nearest neighbour distance
+  nndistX <- nndist(X)
+  Dobs <- mean(nndistX)
+  # Dpois = Expected mean nearest neighbour distance for Poisson process
+  Dpois <- 1/(2*sqrt(intensity))
+
+  ## initialise
+  statistic <- NULL
+  SE.Dobs <- NULL
+  if(working) {
+    work <- list(areaW=areaW, npts=npts, intensity=intensity,
+                 Dobs=Dobs, Dpois=Dpois)
+    #' null standard error of Dobs = mean(nndist(X)) 
+    SE.Dobs <- sqrt(((4-pi)*areaW)/(4 * pi))/npts  # sic
+  }
+
+  ## start computing results
+  
+  # Naive uncorrected value
+  if("none" %in% correction) {
+    Rnaive <- Dobs/Dpois
+    statistic <- c(statistic, naive=Rnaive)
+    if(working) {
+      #' null standard error of Clark-Evans statistic Rnaive
+      SE.Rnaive <- SE.Dobs / Dpois
+      work <- append(work, list(SEnaive=SE.Rnaive))
+    }
+  }
+  #' Donnelly edge correction
+  if("Donnelly" %in% correction) {
+     #' Edge corrected mean nearest neighbour distance, Donnelly 1978
+    if(W$type == "rectangle") {
+      perim <- perimeter(W)
+      Dkevin  <- Dpois + (0.0514+0.0412/sqrt(npts))*perim/npts
+      Rkevin <- Dobs/Dkevin
+      if(working) {
+        #' null standard error of adjusted Clark-Evans statistic Rkevin
+        SE.Rkevin <- SE.Dobs / Dkevin
+        work <- append(work,
+                       list(perim=perim,
+                            Dkevin=Dkevin,
+                            SEkevin=SE.Rkevin))
+      }
+    } else {
+      Rkevin <- NA
+    }
+    statistic <- c(statistic, Donnelly=Rkevin)
+  }
+  # guard area method
+  if("guard" %in% correction && !is.null(clipregion)) {
+    #' use nn distances from points inside `clipregion'
+    ok <- inside.owin(X, , clipregion)
+    Dguard <- mean(nndistX[ok])
+    Rguard <- Dguard/Dpois
+    statistic <- c(statistic, guard=Rguard)
+    ## additional info
+    if(working) {
+      npts.guard <- sum(ok)
+      areaWclip <- area(clipregion)
+      #' null standard error of Dguard = mean(nndist(X[clipregion])) 
+      SE.Dguard <- sqrt((4-pi)/(4 * pi * npts.guard * intensity))
+      #' null standard error of adjusted Clark-Evans statistic Rguard
+      SE.Rguard <- SE.Dguard / Dpois
+      work <- append(work,
+                     list(Dguard=Dguard,
+                          npts.guard=npts.guard,
+                          SEguard=SE.Rguard))
+
+    }
+  }
+  if("cdf" %in% correction) {
+    # compute mean of estimated nearest-neighbour distance distribution G
+    G <- Gest(X)
+    numer <- stieltjes(function(x){x}, G)$km
+    denom <- stieltjes(function(x){rep.int(1, length(x))}, G)$km
+    Dcdf <- numer/denom
+    Rcdf <- Dcdf/Dpois
+    statistic <- c(statistic, cdf=Rcdf)
+    if(working) {
+      #' approximate null standard error of Dobs = mean(Gest(X)) 
+      SE.Dcdf <- SE.Dobs
+      #' null standard error of Clark-Evans statistic Rcdf
+      SE.Rcdf <- SE.Dcdf/Dpois
+      work <- append(work, list(Dcdf=Dcdf,
+                                SEcdf=SE.Rcdf))
+    }
+  }
+
+  if(working) attr(statistic, "working") <- work
+
+  return(statistic)
+}
+
+
+
+###############################
+
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+df.r <- as.data.frame(r, xy=TRUE)
+colnames(df.r)<- c("x","y","id")
+
+
+#d <- readRDS("d.rds")
+# sf points of the plots within each grid cell
+dPlot <- d%>% 
+  dplyr::select(X, Y, id)%>%unique() %>%
+         st_as_sf(coords = c("X", "Y"), crs = st_crs(3035))
+
+id <- dPlot %>% dplyr::select(id)%>% drop_na()
+
+#intersection of the european grid with the points 
+
+r <- as.polygons(r)
+r.sf <- st_as_sf(r)
+r.sf <- st_make_valid(r.sf) 
+sp <- st_intersects(r.sf, dPlot)
+res <- purrr::map_depth(sp, 1, ~ifelse(is.null(.x), NA, .x) )
+
+rm(r)
+
+OV_l <- unlist(res)
+
+# geometric selection of the grids that overlaied the plots then, transformation in bbox
+
+dPlot_ov <- cbind(r.sf, id=OV_l)%>%drop_na()%>%dplyr::select(lyr.1, geometry)
+bbox_list <- lapply(dPlot_ov$geometry, st_bbox) 
+# Convert the list of bboxes to a data frame
+bbox_df <- data.frame(do.call(rbind, bbox_list)) %>% cbind(id=dPlot_ov$lyr.1)
+
+# nested dataframe by id of the plots coordinates
+
+dPlot <- d%>% 
+  dplyr::select(X, Y, id)%>%
+  unique()%>%
+  arrange(id)%>%
+  inner_join(., bbox_df, by="id")%>%
+  dplyr::select(X, Y, id)%>%
+  group_by(id)%>% 
+  nest()
+
+bbox_id <- bbox_df %>%
+  dplyr::select(xmin,xmax,ymin,ymax)
+
+# Step 2: Prepare the list of ppp objects
+y5 <- list()
+for (i in 1:1121) {
+  ppp_obj <- ppp(dPlot$data[[i]]$X, dPlot$data[[i]]$Y, window = owin(c(bbox_id$xmin[i], bbox_id$xmax[i]), c(bbox_id$ymin[i], bbox_id$ymax[i]))
+  )
+  y5[[i]] <- ppp_obj
+}
+
+test <- map(y5, ~ clarkevans.test2(.x, correction="cdf"))
+saveRDS(test, "test.rds")
+
+# extract from the output large list the nni values
+
+extracted_values.nni <- list()
+for (i in 1:length(test)) {
+  extracted_values.nni[[i]] <- test[[i]][["statistic"]][["R"]]
+}
+combined_values.nni <- unlist(extracted_values.nni)
+
+nni <- combined_values.nni
+# extract from the output large list the nni ses values
+
+extracted_values.nniSES <- list()
+for (i in 1:length(test)) {
+  extracted_values.nniSES[[i]] <- test[[i]][["statistic.SES"]][["R"]]
+}
+combined_values.nniSES <- unlist(extracted_values.nniSES)
+
+nni.ses <- combined_values.nniSES
+
+NNI.NNI_SES <- data.frame(nni=nni, nni.ses=nni.ses) %>% 
+  cbind(id=dPlot$id) %>% 
+  inner_join(., df.r, by="id") %>% 
+  unique() %>% 
+  drop_na() %>% #max(NNI.NNI_SES$nni) [1] 1.439661
+  mutate(range=cut(nni, c(0,1,1.439661), include.lowest=TRUE, labels=FALSE))
+
+saveRDS(NNI.NNI_SES, "NNI.NNI_SES.rds")
+
+# number of grid cells with clustered distribution of plots
+countr <- NNI.NNI_SES %>% mutate(sum = sum(range == 1, na.rm = TRUE)) # 642 grid cells with clustered distribution with respect to 659 total grid cells
+
+NNI.NNI_SES <- NNI.NNI_SES %>% 
+  st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+  st_transform(crs = st_crs(3035))
+
+
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+v <- vect(NNI.NNI_SES)
+NNIr <- rasterize(v, r, field="nni")
+
+rm(v)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+world <- world %>% st_transform(crs = st_crs(3035))
+
+NNIr_sp <- as.polygons(NNIr, dissolve=FALSE)
+NNIr_sp %>% 
+  st_as_sf () %>%  
+  ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+  geom_sf(aes(fill = last))+
+  scale_fill_scico(palette='vik',direction = 1,alpha = 0.7, midpoint=1)+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "Average Nearest Neighbor Index", x="Longitude", y="Latitude", fill = "NNI") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot
