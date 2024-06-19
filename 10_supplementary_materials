@@ -1,0 +1,836 @@
+################# TRIVARIATE MAP ###############
+
+library(tricolore)
+library(ggtern)
+require(tidyverse)
+library(viridis)
+library(rnaturalearth)
+library(sf)
+library(terra)
+
+d <- readRDS("d.rds")
+
+###### Temporal bias ####
+
+dTB <- readRDS("dTB.rds")
+
+###### Taxonomic bias ####
+
+
+compr <- readRDS("compr.rds")
+
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+df.r <- as.data.frame(r, xy=TRUE)
+colnames(df.r)<- c("x","y","id")
+
+#### following codes standardize the number of grid cells
+
+NNI.NNI_SES <- readRDS("NNI.NNI_SES.rds")
+NNI <- NNI.NNI_SES %>% dplyr::select(id, nni) %>% unique() %>% drop_na()
+cells <- NNI$id
+ctr <- as.data.frame(xyFromCell(r, cells))
+
+ctr <- ctr %>% 
+  st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+  st_transform(crs = st_crs(3035))
+
+rm(NNI.NNI_SES)
+
+# extraction of completeness values for the centroids coordinates of NNI at 39.5 km 
+Vcompr <- extract(compr, ctr)
+
+NNI_COMP <- cbind(NNI, Completeness=Vcompr$last) %>% 
+  drop_na() %>% 
+  dplyr::select(id, nni, Completeness)
+
+NNI_COMP_EV <- NNI_COMP %>% inner_join(., dTB, by="id")%>% dplyr::select(id, nni, Completeness, J) %>% inner_join(., df.r, by="id")
+####### to scale all to the same range ###
+# z-values
+NNI_COMP_EV_standardized <- NNI_COMP_EV %>% 
+  mutate(across(c("nni", "Completeness","J") , scale)) %>% 
+  mutate(across(c("nni", "Completeness", "J"), function(x) (x - min(x)) / (max(x) - min(x))))
+
+colnames(NNI_COMP_EV_standardized) <- c("id","nni","comp","J","x","y")
+
+rm(NNI_COMP_EV)
+rm(NNI_COMP)
+
+######
+
+NNI_COMP_EV_standardized <- NNI_COMP_EV_standardized %>% 
+  st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+  st_transform(crs = st_crs(3035))
+
+# create Spatraster object
+
+v <- vect(NNI_COMP_EV_standardized)
+NNI_COMP_EVsr <- rasterize(v, r, field=c("nni","comp","J"))
+
+rm(v)
+
+NNI_COMP_EVssp <- as.polygons(NNI_COMP_EVsr, dissolve=FALSE)
+
+NNI_COMP_EVssf <- NNI_COMP_EVssp %>% st_as_sf ()
+
+# tricolore function
+
+tric <- Tricolore(NNI_COMP_EVssf, p1 = 'nni', p2 = 'comp', p3 = 'J',
+                  contrast = 0.5, hue= 1)
+NNI_COMP_EVssf$rgb <- tric$rgb
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world <- world %>% st_transform(crs = st_crs(3035))
+
+NNI_COMP_EVssf %>% 
+  ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+  geom_sf(aes(fill = factor(rgb)), color= "transparent")+
+  scale_fill_identity()+
+coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+ theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=12,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=12,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=12,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   -> TRI
+
+p <- TRI +
+    annotation_custom(
+        ggplotGrob(tric$key),
+        xmin = 69e5, xmax = 89e5, ymin = 8e5, ymax = 80e5)
+
+############ MAP COMPLETENESS NUMBER OF PLOTS ##########
+
+library(tidyverse)
+library(viridis)
+library(sf)
+library(terra)
+library(rnaturalearth)
+library(patchwork)
+
+comp <- readRDS("comp.rds")
+comp <- comp %>% dplyr::select(id, SC) 
+
+# numbr of plots per grid cell
+
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+df.r <- as.data.frame(r, xy=TRUE)
+colnames(df.r)<- c("x","y","id")
+
+        nPlot <- d %>% dplyr::select(id, PlotObservationID)%>% unique()%>% group_by(id) %>%
+  mutate(nPlot = n()) %>%
+  ungroup() %>% dplyr::select(id, nPlot)%>% unique()%>%
+  inner_join(., df.r, by="id")
+
+# join completeness and number of plots
+
+comp.nplot <- comp %>% inner_join(., nPlot, by="id") %>%
+        st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+        st_transform(crs = st_crs(3035))
+
+comp.nplot <- comp.nplot %>% unique() %>% drop_na() %>% dplyr::select(SC, nPlot, geometry) # n id 683
+
+v <- vect(comp.nplot)
+compr <- rasterize(v, r, field="SC")
+nPlotr <- rasterize(v, r, field="nPlot")
+
+rm(comp.nplot)
+rm(v)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world <- world %>% st_transform(crs = st_crs(3035))
+
+compr_sp <- as.polygons(compr, dissolve=FALSE)
+compr_sp %>% 
+  st_as_sf () %>%  
+ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+geom_sf(aes(fill =last))+
+  scale_fill_viridis(option='viridis',direction = 1,alpha = 0.7)+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "A", fill = "Completeness") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot1
+
+
+nPlotr_sp <- as.polygons(nPlotr, dissolve=FALSE)
+nPlotr_sp %>% 
+  st_as_sf () %>%  
+ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+geom_sf(aes(fill =log(last)))+
+  scale_fill_viridis(option='viridis',direction = 1,alpha = 0.7)+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "B", fill = "log(nPlot)") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot2
+
+p <- plot1 + plot2
+
+ggsave(plot = p,
+       filename = "comp.nplot.jpg",
+       width = 15,
+       height = 12,
+       dpi = 600)
+
+############ MAP COMPLETENESS FOR PLOT SIZE ##########
+
+library(tidyverse)
+library(iNEXT)
+library(terra)
+library(sf)
+library(patchwork)
+library(viridis)
+library(rnaturalearth)
+
+library(sPlotOpenR)
+
+# download sPlotOpen dataset and load into R
+data <- get_sPlot(load = T) 
+
+DT <- data[["DT"]]
+DT$Species <- gsub(DT$Species, pattern = ' ', replacement = '_')
+
+# Separate data into species and non-species levels
+species_level <- DT[grepl("_", DT$Species),]
+NOspecies_level <- DT[!grepl("_", DT$Species),]
+d <- merge(species_level, data[["header"]], by = 'PlotObservationID')
+
+rm(DT2.oa)
+rm(header.oa)
+
+# Filter for Europe, Year >= 1992, and Location uncertainty < 250
+d <- d[d$Continent == 'Europe' & d$Location_uncertainty < 250,]
+d$Year <- substr(d$Date_of_recording, 1, 4)
+d <- d[d$Year >= 1992,]
+
+# European grid: 1) raster layer of 0.5 degree 2) projection in LAEA crs(39.5km of spatial resolution)
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+# transformation of the raster layer in polygons
+r <- as.polygons(r)
+r.sf <- st_as_sf(r)
+st_crs(r.sf) <- st_crs(3035)
+r.sf <- st_transform(r.sf, crs = st_crs(3035))
+r.sf <- st_make_valid(r.sf) 
+
+# dataframe with plots and relative location then, transformation in sf points
+dCoord <- d %>% dplyr::select(Longitude, Latitude, PlotObservationID)%>%
+  unique()%>%
+  drop_na() %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = st_crs("+proj=longlat +datum=WGS84")) %>%
+  st_crop(., c(xmin = -16.1, ymin = 32.88, xmax = 40.18  , ymax =84.73))%>%
+  st_transform(crs = st_crs(3035))
+
+# intersection of sf points with the european grid polygons
+OV <- st_intersects(dCoord, r.sf)
+OV_l <- unlist(OV) 
+
+# dataframe of the plots within each grid cell
+d_id <- d %>% dplyr::select(Longitude, Latitude, PlotObservationID)%>%
+  unique()%>%
+  drop_na() %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = st_crs("+proj=longlat +datum=WGS84")) %>%
+  st_crop(., c(xmin = -16.1, ymin = 32.88, xmax = 40.18 , ymax =84.73))%>%
+  st_transform(crs = st_crs(3035))%>%
+  data.frame(st_coordinates(st_cast(.,"MULTIPOINT")))%>%
+  dplyr::select(-geometry)%>%
+  cbind(., id=OV_l) %>%
+  dplyr::select(id, PlotObservationID) #plot: 9481
+
+rm(dCoord)
+
+# final dataframe
+d <- d %>% 
+  dplyr::select(Longitude, Latitude, PlotObservationID, Species, Year, Releve_area)%>%
+  unique()%>%
+  drop_na() %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = st_crs("+proj=longlat +datum=WGS84")) %>%
+  st_crop(., c(xmin = -16.1, ymin = 32.88, xmax = 40.18 , ymax =84.73))%>%
+  st_transform(crs = st_crs(3035))%>%
+  data.frame(st_coordinates(st_cast(.,"MULTIPOINT")))%>%
+  dplyr::select(-geometry) %>% left_join(., d_id, by="PlotObservationID")
+
+
+
+d$records <- 1
+
+# divide dataset for plot size
+
+d1 <- d %>%
+  dplyr::select(Species, PlotObservationID, records, Releve_area, id) %>% drop_na() %>% filter(Releve_area <= 150)
+#length(unique(d1$PlotObservationID))
+#[1] 5344
+
+d2 <- d %>%
+  dplyr::select(Species, PlotObservationID, records, Releve_area, id) %>% drop_na() %>% filter(Releve_area > 150)
+#length(unique(d2$PlotObservationID))
+#[1] 1455
+
+# community matrix IDplots x species
+
+# community matrix IDplots x species
+d1_matrix <- d1 %>%
+  dplyr::select(Species, PlotObservationID, records, id)%>%
+  unique() %>%
+  group_by(id)%>%
+  nest()
+
+matrix_next <- function(x)
+  {
+  m <- pivot_wider(x, names_from =Species, values_from = records, id_cols=PlotObservationID, values_fill = 0) %>% unique()
+  return(m)
+}
+
+md1 <- map(d1_matrix$data, ~ matrix_next(.x))
+single_row_indices <- sapply(md1, function(df) nrow(df) %in% c(1, 2)) 
+
+d1_matrix <- d1_matrix %>% cbind(na = single_row_indices) %>% filter(!na=="TRUE") %>% dplyr::select(-na) %>% filter(!id==17386) %>% filter(!id==2947) 
+#414 id
+md1 <- map(d1_matrix$data, ~ matrix_next(.x))
+list_next <- function(x)
+{
+  names(x) <- NULL
+  l <- colSums(x[, 2:ncol(x)])
+ l <- c(nrow(x), l)
+  return(l)
+}
+
+ld1 <- map(md1, ~ list_next(.x))
+
+inext <- function(x)
+{
+  ld_sr <- iNEXT(x, q=0, datatype="incidence_freq", knots = 5)
+  return( ld_sr)
+}
+
+ld1_sr <- map(ld1, ~ inext(.x))
+
+rm(ld1)
+rm(md1)
+### d2 ###
+
+d2_matrix <- d2 %>%
+  dplyr::select(Species, PlotObservationID, records, id)%>%
+  unique() %>%
+  group_by(id)%>%
+  nest()
+#394 id
+matrix_next <- function(x)
+  {
+  m <- pivot_wider(x, names_from =Species, values_from = records, id_cols=PlotObservationID, values_fill = 0) %>% unique()
+  return(m)
+}
+
+md2 <- map(d2_matrix$data, ~ matrix_next(.x))
+single_row_indices <- sapply(md2, function(df) nrow(df) %in% c(1, 2)) 
+
+d2_matrix <- d2_matrix %>% cbind(na = single_row_indices) %>% filter(!na=="TRUE") %>% dplyr::select(-na) # 164 num di id 
+md2 <- map(d2_matrix$data, ~ matrix_next(.x))
+list_next <- function(x)
+{
+  names(x) <- NULL
+  l <- colSums(x[, 2:ncol(x)])
+ l <- c(nrow(x), l)
+  return(l)
+}
+
+ld2 <- map(md2, ~ list_next(.x))
+
+inext <- function(x)
+{
+  ld_sr <- iNEXT(x, q=0, datatype="incidence_freq", knots = 5)
+  return( ld_sr)
+}
+
+ld2_sr <- map(ld2, ~ inext(.x))
+
+
+df_sc <- function(x)
+{
+  ld_sc <- data.frame(SC1=x$DataInfo$SC)
+  return( ld_sc)
+}
+
+rm(ld2)
+rm(md2)
+
+ld1_sc <- map(ld1_sr, ~ df_sc(.x)) 
+ld1_sc <- as.data.frame(unlist(ld1_sc))
+ld1_sc <- ld1_sc %>% rename(SC=`unlist(ld1_sc)`)
+d1_matrix_sc <- d1_matrix %>% cbind(ld1_sc) %>% unnest(cols = c(data))
+rm(ld1_sr)
+rm(ld1_sc)
+
+ld2_sc <- map(ld2_sr, ~ df_sc(.x)) 
+ld2_sc <- as.data.frame(unlist(ld2_sc))
+ld2_sc <- ld2_sc %>% rename(SC=`unlist(ld2_sc)`)
+d2_matrix_sc <- d2_matrix %>% cbind(ld2_sc) %>% unnest(cols = c(data))
+rm(ld2_sr)
+rm(ld2_sc)
+
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+df.r <- as.data.frame(r, xy=TRUE)
+colnames(df.r)<- c("x","y","id")
+
+# sf points of grid cells centroids
+
+comp1 <- d %>% dplyr::select(-id) %>% 
+        inner_join(., d1_matrix_sc, by="PlotObservationID")%>%
+        inner_join(., df.r, by="id")%>%
+        st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+        st_transform(crs = st_crs(3035))
+comp1 <- comp1 %>% dplyr::select(geometry, SC) %>% unique() 
+
+v1 <- vect(comp1)
+compr1 <- rasterize(v1, r, field="SC")
+
+rm(comp1)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world <- world %>% st_transform(crs = st_crs(3035))
+
+compr1_sp <- as.polygons(compr1, dissolve=FALSE)
+
+
+comp2 <- d %>% dplyr::select(-id) %>% 
+        inner_join(., d2_matrix_sc, by="PlotObservationID")%>%
+        inner_join(., df.r, by="id")%>%
+        st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+        st_transform(crs = st_crs(3035))
+comp2 <- comp2 %>% dplyr::select(geometry, SC) %>% unique() 
+
+v2 <- vect(comp2)
+compr2 <- rasterize(v2, r, field="SC")
+
+compr2_sp <- as.polygons(compr2, dissolve=FALSE)
+
+
+compr1_sp %>% 
+  st_as_sf () %>%  
+ggplot()+
+ geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+geom_sf(aes(fill =last))+
+  scale_fill_viridis(option='viridis',direction = 1,alpha = 0.7, limits=c(0, 1))+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "A", fill = "Completeness") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot1
+
+compr2_sp %>% 
+  st_as_sf () %>%  
+ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+geom_sf(aes(fill =last))+
+  scale_fill_viridis(option='viridis',direction = 1,alpha = 0.7, limits=c(0, 1))+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "B", fill = "Completeness") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot2
+p <- plot1 +  plot2 + plot_layout(guides = "collect") & theme(legend.position = "bottom")
+
+################## MAP NNI AND NNI STANDARDIZED EFFECT SIZE #####################
+
+library(tidyverse)
+library(terra)
+library(sf)
+library(viridis)
+library(rnaturalearth)
+
+# object "test" of clarkevans.test2 function
+test <- readRDS(test.rds)
+
+# return only monte carlo simulations different from NA
+sim <- function(x)
+{
+  t <- data.frame(x[["sims"]]) %>% drop_na()
+  t <- nrow(t)
+  return(t)
+}
+
+s <-map(test, ~ sim(.x))
+sl <- unlist(s)
+
+sl <- data.frame(sl=sl)
+
+NNI.NNI_SES <- data.frame(nni=nni, nni.ses=nni.ses) %>% 
+     cbind(id=dPlot$id) %>% 
+     inner_join(., df.r, by="id") %>% 
+     unique() 
+ NNI.NNI_SES <- NNI.NNI_SES %>% 
+      cbind(sl)
+NNI.NNI_SES <- NNI.NNI_SES %>% drop_na() %>% filter(sl >= 500) %>% 
+mutate(range=cut(nni, c(0,1,1.439661), include.lowest=TRUE, labels=FALSE)) ### 487 grids
+
+rm(sl)
+
+NNI.NNI_SES.p <- NNI.NNI_SES  %>% 
+  dplyr::select(range, x, y) %>% drop_na()%>% 
+  st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+  st_transform(crs = st_crs(3035))
+
+v <- vect(NNI.NNI_SES.p)
+NNIr <- rasterize(v, r, field="range")
+NNIr_sp <- as.polygons(NNIr, dissolve=FALSE)
+NNIr_sp %>% 
+  st_as_sf () %>%  
+  ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+  geom_sf(aes(fill =factor(last)))+
+  scale_fill_manual(values = c("#56B4E9","#E69F00"), labels=c("0.0-1.0","> 1"))+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "A", fill = "NNI") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot3
+
+
+NNI.NNI_SES.p <- NNI.NNI_SES  %>% 
+  mutate(d = ifelse(nni.ses >= 0.8 & nni.ses <= -0.8, TRUE, FALSE)) %>% dplyr::select(d, x, y) %>% drop_na()%>% 
+  st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+  st_transform(crs = st_crs(3035))
+
+v <- vect(NNI.NNI_SES.p)
+NNIrses <- rasterize(v, r, field="d")
+
+
+NNIr_spses <- as.polygons(NNIrses, dissolve=FALSE)
+NNIr_spses %>% 
+  st_as_sf () %>%  
+  ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+  geom_sf(aes(fill = factor(last)))+
+ scale_fill_manual(values = c("#F1B6DA","#404040"), labels=c(">= 0.8 & <= -0.8",">= -0.8 & <= 0.8"))+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "B", fill = "NNI.SES") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot4
+
+
+
+p <- plot3 + plot4
+
+
+ggsave(plot = p,
+       filename = "nni_ses.jpg",
+       width = 12,
+       height = 12,
+       dpi = 600)
+
+############ NUMBER OF PLOTS #############
+library(tidyverse)
+library(viridis)
+library(rnaturalearth)
+library(sf)
+library(terra)
+
+d <- readRDS("d.rds")
+
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+df.r <- as.data.frame(r, xy=TRUE)
+colnames(df.r)<- c("x","y","id")
+
+# select the vegetation plots and sum the number of plots per grid cell then, transform the dataframe in sf points
+nPlot <- d %>% dplyr::select(id, PlotObservationID)%>% unique()%>% group_by(id) %>%
+    mutate(nPlot = n()) %>%
+    ungroup() %>% dplyr::select(id, nPlot)%>% unique()%>%
+    inner_join(., df.r, by="id") %>%
+    st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+    st_transform(crs = st_crs(3035))
+
+rm(d)
+
+v <- vect(nPlot)
+nPlotr <- rasterize(v, r, field="nPlot")
+
+rm(v)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world <- world %>% st_transform(crs = st_crs(3035))
+
+nPlotr_sp <- as.polygons(nPlotr, dissolve=FALSE)
+nPlotr_sp %>% 
+    st_as_sf () %>%  
+    ggplot()+
+    geom_sf(data=world,
+            colour = "black", fill = "lightgray")+
+    geom_sf(aes(fill =log(last)))+
+    scale_fill_viridis(option='viridis',direction = 1,alpha = 0.7)+
+    coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+    labs(title = "Number of plots", fill = "log(nPlot)") +theme_light()+
+    theme(legend.background=element_blank(),
+          panel.grid = element_blank(),
+          legend.position = 'bottom',
+          plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+          legend.title=element_text(size=12,face = 'bold'),
+          axis.title.x = element_text(size=14,face = 'bold'),
+          axis.text.x = element_text(size = 10, face = 'bold'),
+          axis.title.y = element_text(size=14,face = 'bold'),
+          axis.text.y = element_text(size = 10, face = 'bold'),
+          axis.ticks.y=element_blank(),
+          text = element_text(size=12), 
+          strip.text = element_text(size=12),
+          legend.text = element_text(size=12,angle = 0), 
+          legend.key.size = unit(0.8, 'cm'))   ->plot
+
+ggsave(plot = plot,
+       filename = "nPlot.jpg",
+       width = 10,
+       height = 10,
+       dpi = 600)
+
+############ NATURA 2000 NETWORK #############
+
+library(tidyverse)
+library(terra)
+library(sf)
+library(viridis)
+library(rnaturalearth)
+
+nNat2 <- readRDS("nNat2.rds")
+
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+df.r <- as.data.frame(r, xy=TRUE)
+colnames(df.r)<- c("x","y","id")
+
+nNat2 <- nNat2 %>% inner_join(., df.r, by="id") %>%
+  st_as_sf(coords = c("x", "y"), crs = st_crs(3035))
+
+
+v <- vect(nNat2)
+Natr <- rasterize(v, r, field="rIN")
+
+rm(v)
+
+spNat <- as.polygons(Natr, dissolve=FALSE)
+
+world <- ne_coastline(scale = "medium", returnclass = "sf")
+world <- world %>% st_transform(crs = st_crs(3035))
+
+spNat  %>% 
+  st_as_sf () %>%  
+  ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+  geom_sf(aes(fill =last))+
+  scale_fill_viridis(option='viridis',direction = 1,alpha = 0.7)+
+ coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "Relative number of plots in Natura 2000 network", fill = " r/n Plots") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=12,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=12,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=12,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot
+
+ggsave(plot = plot,
+       filename = "NatMap.jpg",
+       width = 10,
+       height = 10,
+       dpi = 600)
+
+
+################# TEMPORAL UNCERTAINTY MAP ###############
+
+library(tidyverse)
+library(terra)
+library(sf)
+library(viridis)
+library(rnaturalearth)
+
+d <- readRDS("d.rds")
+
+d$Year <- as.numeric(d$Year)
+
+# difference in years from the most recent plot observation
+
+d$YearDif <- 2014-d$Year
+
+############ PLOT #############
+
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+df.r <- as.data.frame(r, xy=TRUE)
+colnames(df.r)<- c("x","y","id")
+
+############ plot temporal uncertainty median ############
+
+dtu<- d %>% dplyr::select(id, YearDif, PlotObservationID)%>% unique()%>% group_by(id)  %>%
+  mutate(YearDif= median(YearDif)) %>%
+  ungroup() %>% dplyr::select(id, YearDif)   
+
+rm(d)
+
+dtu <- dtu %>% inner_join(., df.r, by="id")%>%
+  st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) 
+
+v <- vect(dtu)
+TUr <- rasterize(v, r, field="YearDif")
+
+rm(v)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+world <- world %>% st_transform(crs = st_crs(3035))
+
+
+TU_sp <- as.polygons(TUr, dissolve=FALSE)
+TU_sp %>% 
+  st_as_sf () %>%  
+  ggplot()+
+  geom_sf(data=world,
+          colour = "black", fill = "lightgray")+
+  geom_sf(aes(fill = last))+
+  scale_fill_viridis(option='viridis',direction = 1,alpha = 0.7)+
+  coord_sf(xlim = c(2100000, 6500000), ylim = c(1100000, 5500000), expand = TRUE, datum = sf::st_crs(3035))+
+  labs(title = "Temporal distance", fill ="Temporal dist. median(years)") +theme_light()+
+  theme(legend.background=element_blank(),
+        panel.grid = element_blank(),
+        legend.position = 'bottom',
+        plot.title = element_text(size=17,face = 'bold',hjust = 0.5),
+        legend.title=element_text(size=12,face = 'bold'),
+        axis.title.x = element_text(size=14,face = 'bold'),
+        axis.text.x = element_text(size = 10, face = 'bold'),
+        axis.title.y = element_text(size=14,face = 'bold'),
+        axis.text.y = element_text(size = 10, face = 'bold'),
+        axis.ticks.y=element_blank(),
+        text = element_text(size=12), 
+        strip.text = element_text(size=12),
+        legend.text = element_text(size=12,angle = 0), 
+        legend.key.size = unit(0.8, 'cm'))   ->plot
+
+
+ggsave(plot = plot,
+       filename = "temporal_distance.jpg",
+       width = 10,
+       height = 10,
+       dpi = 600)
+
