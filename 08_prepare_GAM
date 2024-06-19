@@ -1,0 +1,405 @@
+library(sf)
+library(rnaturalearth)
+library(tidyverse)
+library(terra)
+library(mgcv)
+library(spdep)
+library(gratia)
+library(patchwork)
+library(sp)
+library(pgirmess)
+
+d <- readRDS("d.rds")
+
+# plot locations to extract the values of the spatial variables
+
+dCoord <- d %>% dplyr::select(X, Y, PlotObservationID,id)%>%
+     unique()%>%
+     drop_na() %>%
+     st_as_sf(coords = c("X", "Y"), crs = st_crs(3035)) %>%
+     st_transform(crs = st_crs("+proj=longlat +datum=WGS84")) %>% unique()
+
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+df.r <- as.data.frame(r, xy=TRUE)
+colnames(df.r)<- c("x","y","id")
+
+#### pop count ####
+
+pop <- rast("ppp_2014_1km_Aggregated.tif")
+
+# extraction of the values of the raster in the plot locations 
+
+dpop <- terra::extract(pop, dCoord)
+dpop <- dpop %>% cbind(dCoord)
+dpop <- dpop[,-1]
+
+# mean value of the spatial variable at 39.5 km of spatial resolution
+
+dpop <- dpop %>% st_as_sf() %>% st_transform(crs = st_crs(3035)) %>% group_by(id) %>% mutate(meanPop = mean(ppp_2014_1km_Aggregated, na.rm = TRUE)) %>% ungroup()
+
+# trasforming the sf points in terra object
+
+v <- vect(dpop)
+
+#trasforming the points in raster assigning the resolution of r (39.5 km)
+popr <- rasterize(v, r, field="meanPop")
+
+#### roughness ####
+
+rough <- rast("roughness_50KMmd_GMTEDmd.tif")
+
+drough <- terra::extract(rough, dCoord)
+drough <- drough %>% cbind(dCoord)
+drough <- drough[,-1]
+
+drough <- drough %>% st_as_sf() %>% st_transform(crs = st_crs(3035)) %>% group_by(id) %>% mutate(meanRough = mean(roughness_50KMmd_GMTEDmd, na.rm = TRUE)) %>% ungroup()
+
+v <- vect(drough)
+roughr <- rasterize(v, r, field="meanRough")
+
+
+#### road density ####
+road <- readRDS("density_1km.rds")
+
+dCoord <- d %>% dplyr::select(X, Y, PlotObservationID, id)%>%
+  unique()%>%
+  drop_na() %>%
+  st_as_sf(coords = c("X", "Y"), crs = st_crs("+proj=laea +lat_0=52 +lon_0=10 +x_0=4321000 +y_0=3210000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"))%>% 
+  unique()
+
+droad <- terra::extract(road, dCoord)
+droad <- droad %>% cbind(dCoord)
+droad <- droad[,-1]
+
+droad <- droad %>% st_as_sf() %>% st_transform(crs = st_crs(3035)) %>% group_by(id) %>% mutate(meanRoad = mean(lyr.1, na.rm = TRUE)) %>% ungroup()
+
+v <- vect(droad)
+roadr <- rasterize(v, r, field="meanRoad")
+
+#### Num plots ####
+
+nPlot <- d %>% dplyr::select(id, PlotObservationID)%>% unique()%>% group_by(id) %>%
+  mutate(nPlot = n()) %>%
+  ungroup() %>% dplyr::select(id, nPlot)%>% unique()%>%
+  inner_join(., df.r, by="id")
+
+#### Nat 2000 ####
+
+nNat2 <- readRDS("nNat2.rds")
+
+#### Facets of bias ####
+
+NNI.NNI_SES <- readRDS("NNI.NNI_SES.rds")  
+
+dTB <- readRDS("dTB.rds")
+
+compr <- readRDS("compr.rds")
+
+# the following codes standardize the number of grid cell for the reponse variables and the spatial variables 
+
+NAT_nPlot <- nNat2 %>% inner_join(., nPlot, by="id")
+
+
+cells <- NAT_nPlot$id
+ctr <- as.data.frame(xyFromCell(r, cells))
+
+ctr <- ctr %>% 
+  st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
+  st_transform(crs = st_crs(3035))
+
+Vpop <- terra::extract(popr, ctr)
+Vdis <- terra::extract(roadr,ctr)
+Vcompr <- terra::extract(compr,ctr)
+Vrough <- terra::extract(roughr,ctr)
+
+
+
+########## GAM COMP with  S(x,y) ########
+NAT_DIS_PLOT_POP_COMP_ROU_auto <- cbind(NAT_nPlot, pop=Vpop$last, dis=Vdis$last, comp=Vcompr$last, rough=Vrough$last) %>% drop_na()
+
+
+NAT_DIS_PLOT_POP_COMP_ROU <- NAT_DIS_PLOT_POP_COMP_ROU_auto %>% dplyr::select(rIN, dis,pop, comp, rough, nPlot)
+
+# standardization and normalization
+
+scaled_data <- NAT_DIS_PLOT_POP_COMP_ROU %>%
+  mutate(across(everything(), scale)) %>%
+  mutate(across(everything(), function(x) (x - min(x)) / (max(x) - min(x))))
+
+colnames(scaled_data) <- c("N2K","road","pop", "comp","rough", "nPlot")
+scaled_data <- scaled_data  %>% relocate("comp", .before = "N2K")
+
+scaled_data <- scaled_data  %>% cbind(x= NAT_DIS_PLOT_POP_COMP_ROU_auto$x, y=NAT_DIS_PLOT_POP_COMP_ROU_auto$y)
+
+COMP <- 1
+pred_cols <- 2:6
+
+
+names(scaled_data)[COMP]
+names(scaled_data)[pred_cols]
+
+# GAM formula
+
+form_gamCOMP <- as.formula(paste0(names(scaled_data)[COMP], "~", paste0("s(x,y)","+", paste0("s(", names(scaled_data)[pred_cols], ")", collapse = "+"))))
+ModelCOMP <- gam(form_gamCOMP, data = scaled_data, method = "REML")
+
+### Moran-s test for spatial autocorrelation ###
+# dataframe of residuals of the models and centroids of the grid cells
+
+mor <- data.frame(cbind(resid=ModelCOMP[["residuals"]], x=NAT_DIS_PLOT_POP_COMP_ROU_auto$x, y=NAT_DIS_PLOT_POP_COMP_ROU_auto$y))
+
+### correlogram of the resituals and the centroids coordinates ###
+
+coordinates_sp <- mor %>% st_as_sf(coords = c("x", "y"), crs = st_crs(3035))
+sp.cor2 <- correlog(st_coordinates(coordinates_sp),mor$resid, method = "Moran", nbclass=10)
+sp.cor2
+
+plot(sp.cor2)
+
+### global moran test ####
+
+# spatial points of the centroids coordinates
+coordinates_sp <- SpatialPoints(mor[,2:3], proj4string = CRS("EPSG:3035"))
+
+# weights of the points
+spatial_weights <- knearneigh(coordinates_sp)
+
+# network of the points
+
+spatial_weights <- knn2nb(knearneigh(coordinates_sp, k=7), sym=T)
+weights <- nb2listw(spatial_weights, style="B")
+
+# moran test with monte carlo simulation
+
+moran <- moran.mc(mor$resid, weights, nsim=999)
+moran
+
+
+
+############ GAM NNI s(x,y)
+
+NNI <- NNI.NNI_SES %>% dplyr::select(id, nni)
+NAT_DIS_PLOT_POP_NNI_ROU_auto <- cbind(NAT_nPlot, pop=Vpop$last, dis=Vdis$last, rough=Vrough$last) %>% drop_na() %>% inner_join(., NNI, by="id") %>% drop_na()
+
+
+NAT_DIS_PLOT_POP_NNI_ROU <- NAT_DIS_PLOT_POP_NNI_ROU_auto %>% dplyr::select(rIN, dis,pop, rough, nni, nPlot)
+
+scaled_data <- NAT_DIS_PLOT_POP_NNI_ROU %>%
+  mutate(across(everything(), scale)) %>%
+  mutate(across(everything(), function(x) (x - min(x)) / (max(x) - min(x))))
+
+
+scaled_data <- scaled_data  %>% relocate("nni", .before = "rIN")
+
+scaled_data <- scaled_data  %>% cbind(x= NAT_DIS_PLOT_POP_NNI_ROU_auto$x, y=NAT_DIS_PLOT_POP_NNI_ROU_auto$y)
+
+colnames(scaled_data) <- c("nni","N2K","dis", "pop","rough", "nPlot", "x", "y")
+
+NNI <- 1
+pred_cols <- 2:6
+
+names(scaled_data)[NNI]
+names(scaled_data)[pred_cols]
+
+
+form_gamNNI <- as.formula(paste0(names(scaled_data)[COMP], "~", paste0("s(x,y)","+", paste0("s(", names(scaled_data)[pred_cols], ")", collapse = "+"))))
+ModelNNI <- gam(form_gamNNI, data = scaled_data, method = "REML")
+
+mor <- data.frame(cbind(resid=ModelNNI[["residuals"]], x=NAT_DIS_PLOT_POP_NNI_ROU_auto$x, y=NAT_DIS_PLOT_POP_NNI_ROU_auto$y))
+
+### correlogram ###
+
+coordinates_sp <- mor %>% st_as_sf(coords = c("x", "y"), crs = st_crs(3035))
+sp.cor2 <- correlog(st_coordinates(coordinates_sp),mor$resid, method = "Moran", nbclass=10)
+sp.cor2
+
+plot(sp.cor2)
+
+### global moran test ####
+
+coordinates_sp <- SpatialPoints(mor[,2:3], proj4string = CRS("EPSG:3035")
+
+spatial_weights <- knearneigh(coordinates_sp)
+
+spatial_weights <- knn2nb(knearneigh(coordinates_sp, k=7), sym=T)
+weights <- nb2listw(spatial_weights, style="B")
+moran <- moran.mc(mor$resid, weights, nsim=999)
+moran
+
+p <- draw(ModelNNI)
+p
+
+
+######## GAM EVenness
+dTB <- dTB %>% dplyr::select(id, J)
+
+
+
+NAT_DIS_PLOT_POP_EV_ROU <- cbind(NAT_nPlot, pop=Vpop$last, dis=Vdis$last, rough=Vrough$last) %>% inner_join(.,dTB, by="id") %>% drop_na()
+
+NAT_DIS_PLOT_POP_EV_ROU_auto <- NAT_DIS_PLOT_POP_EV_ROU%>% dplyr::select(rIN, dis, pop, rough, J, nPlot)
+
+scaled_data <- NAT_DIS_PLOT_POP_EV_ROU_auto %>%
+  mutate(across(everything(), scale)) %>%
+  mutate(across(everything(), function(x) (x - min(x)) / (max(x) - min(x))))
+
+scaled_data <- scaled_data  %>% relocate("J", .before = "rIN")
+colnames(scaled_data)<- c("J","N2K","road","pop","rough", "nPlot")
+scaled_data <- scaled_data %>% cbind(x=NAT_DIS_PLOT_POP_EV_ROU$x, y=NAT_DIS_PLOT_POP_EV_ROU$y)
+EV <- 1
+pred_cols <- 2:6
+
+names(scaled_data)[EV]
+names(scaled_data)[pred_cols]
+
+form_gamEV <- as.formula(paste0(names(scaled_data)[EV], "~", paste0("s(x,y)","+", paste0("s(", names(scaled_data)[pred_cols], ")", collapse = "+"))))
+ModelEV <- gam(form_gamEV, data = scaled_data, method = "REML")
+
+mor <- data.frame(cbind(resid=ModelEV[["residuals"]], x=NAT_DIS_PLOT_POP_EV_ROU$x, y=NAT_DIS_PLOT_POP_EV_ROU$y))
+
+### correlogram ###
+
+coordinates_sp <- mor %>% st_as_sf(coords = c("x", "y"), crs = st_crs(3035))
+sp.cor2 <- correlog(st_coordinates(coordinates_sp),mor$resid, method = "Moran", nbclass=10)
+sp.cor2
+
+plot(sp.cor2)
+
+## global moran test ###
+
+coordinates_sp <- SpatialPoints(mor[,2:3], proj4string = CRS("EPSG:3035"))
+
+spatial_weights <- knearneigh(coordinates_sp)
+
+spatial_weights <- knn2nb(knearneigh(coordinates_sp, k=7), sym=T)
+weights <- nb2listw(spatial_weights, style="B")
+moran <- moran.mc(mor$resid, weights, nsim=999)
+moran
+
+
+############## Plot responses and spatial variables ###############
+
+# adding response estimates to the dataframe
+sModelCOMP <- smooth_estimates(ModelCOMP) %>%
+  add_confint()
+
+sModelEV <- smooth_estimates(ModelEV) %>%
+  add_confint()
+
+sModelNNI <- smooth_estimates(ModelNNI) %>%
+  add_confint()
+
+# recover residuals from the model
+
+scaled_dataCOMP <- scaled_data %>%
+  add_partial_residuals(ModelCOMP) 
+
+scaled_dataNNI <- scaled_data %>%
+  add_partial_residuals(ModelNNI)
+
+scaled_dataEV <- scaled_data %>%
+  add_partial_residuals(ModelEV)
+
+p_N2K_comp <- sModelCOMP %>%
+  filter(.smooth == "s(N2K)") %>%
+  ggplot() +
+  geom_rug(aes(x = N2K),
+    data = scaled_dataCOMP,
+    sides = "b", length = grid::unit(0.02, "npc")
+  ) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci, x = N2K),
+    alpha = 0.2
+  ) +
+  geom_point(aes(x = N2K, y = `s(N2K)`),
+    data = scaled_dataCOMP, cex = 1.5, colour = "steelblue3"
+  ) +
+  geom_line(aes(x = N2K, y = .estimate), lwd = 1.2) +
+  labs(y = "Completeness", title = "A") +
+coord_cartesian(ylim= c(-0.07, 0.15)) +
+  theme(panel.background = element_blank(),
+        axis.title.x = element_text(size=14),
+        axis.text.x = element_text(size = 14),
+        axis.title.y = element_text(size=14),
+        axis.text.y = element_text(size = 14))
+
+
+p_N2K_nni <- sModelNNI %>%
+  filter(.smooth == "s(N2K)") %>%
+  ggplot() +
+  geom_rug(aes(x = N2K),
+    data = scaled_dataNNI,
+    sides = "b", length = grid::unit(0.02, "npc")
+  ) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci, x = N2K),
+    alpha = 0.2
+  ) +
+  geom_point(aes(x = N2K, y = `s(N2K)`),
+    data = scaled_dataNNI, cex = 1.5, colour = "orange"
+  ) +
+  geom_line(aes(x = N2K, y = .estimate), lwd = 1.2) +
+  labs(y = "NNI", title = "B") +
+  coord_cartesian(ylim= c(-0.07, 0.15)) +
+  theme(panel.background = element_blank(),
+        axis.title.x = element_text(size=14),
+        axis.text.x = element_text(size = 14),
+        axis.title.y = element_text(size=14),
+        axis.text.y = element_text(size = 14))
+
+
+p_N2K_ev <- sModelEV %>%
+  filter(.smooth == "s(N2K)") %>%
+  ggplot() +
+  geom_rug(aes(x = N2K),
+    data = scaled_dataEV,
+    sides = "b", length = grid::unit(0.02, "npc")
+  ) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci, x = N2K),
+    alpha = 0.2
+  ) +
+  geom_point(aes(x = N2K, y = `s(N2K)`),
+    data = scaled_dataEV, cex = 1.5, colour = "darkgreen"
+  ) +
+  geom_line(aes(x = N2K, y = .estimate), lwd = 1.2) +
+  labs(y = "Pielou's Index", title = "C") +
+coord_cartesian(ylim= c(-0.25, 0.15)) +
+  theme(panel.background = element_blank(),
+        axis.title.x = element_text(size=14),
+        axis.text.x = element_text(size = 14),
+        axis.title.y = element_text(size=14),
+        axis.text.y = element_text(size = 14))
+
+p_pop_nni <- sModelNNI %>%
+  filter(.smooth == "s(pop)") %>%
+  ggplot() +
+  geom_rug(aes(x = pop),
+    data = scaled_dataNNI,
+    sides = "b", length = grid::unit(0.02, "npc")
+  ) +
+  geom_ribbon(aes(ymin = .lower_ci, ymax = .upper_ci, x = pop),
+    alpha = 0.2
+  ) +
+  geom_point(aes(x = pop, y = `s(pop)`),
+    data = scaled_dataNNI, cex = 1.5, colour = "orange"
+  ) +
+  geom_line(aes(x = pop, y = .estimate), lwd = 1.2) +
+  labs(y = "NNI", title = "D") +
+coord_cartesian(ylim= c(-0.15, 0.25)) +
+  theme(panel.background = element_blank(),
+        axis.title.x = element_text(size=14),
+        axis.text.x = element_text(size = 14),
+        axis.title.y = element_text(size=14),
+        axis.text.y = element_text(size = 14))
+
+
+p <- p_N2K_comp + p_N2K_nni + p_pop_nni + p_N2K_ev + plot_layout(ncol = 2)
+
+ggsave(plot = p,
+       filename = "gam_map.jpg",
+       width = 18,
+       height = 12,
+       dpi = 600)
