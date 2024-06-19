@@ -1,0 +1,67 @@
+
+library(sf)
+library(rnaturalearth)
+library(tidyverse)
+library(terra)
+library(viridis)
+
+d <- readRDS("d.rds")
+
+Nat2000 <- st_read("Natura2000_end2021_epsg3035.shp") # in Natura2000 folder 
+
+point <- d %>% dplyr::select(X, Y, PlotObservationID)%>%unique()%>%
+      drop_na()%>%
+      st_as_sf(coords = c("X", "Y"), crs = st_crs(3035)) 
+
+Nat2000 <- st_transform(Nat2000, crs = st_crs(3035))
+
+#Nat2000 <- st_make_valid(Nat2000) 
+sp <- st_intersects(point, Nat2000)
+ov <- purrr::map_depth(sp, 1, ~ifelse(is.null(.x), NA, .x) )
+
+OV_l <- unlist(ov)
+
+rm(Nat2000)
+rm(point)
+
+y3 <- d %>% dplyr::select(id, X, Y, PlotObservationID)%>%unique()%>%
+      drop_na() %>%
+      cbind(., lyr.1= OV_l)%>%drop_na() #47.14% IN
+                               #52.86% OUT
+     
+
+
+y3$IN <- 1
+
+
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
+df.r <- as.data.frame(r, xy=TRUE)
+colnames(df.r)<- c("x","y","id")
+
+
+# number of plots inside pretected areas per grid cell
+
+DFinS <- y3 %>% group_by(id)  %>%
+  mutate(countIN= sum(IN)) %>%
+  ungroup() 
+
+# centroids of the grid cells
+
+nNat2 <- DFinS %>% inner_join(., df.r, by="id")
+
+# number of plots per grid cell
+
+nPlot <- d %>% dplyr::select(id, PlotObservationID)%>% unique()%>% group_by(id) %>%
+  mutate(nPlot = n()) %>%
+  ungroup() %>% dplyr::select(id, nPlot)
+
+# relative number of plots inside protected areas per grid cell
+
+nNat2 <- nNat2 %>% inner_join(., nPlot, by="id") %>% mutate(rIN = countIN/nPlot) %>% dplyr::select(id, rIN) %>% unique()
+
+saveRDS(nNat2, "nNat2.rds")
