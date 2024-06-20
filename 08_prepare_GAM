@@ -322,6 +322,7 @@ p_N2K_comp <- sModelCOMP %>%
   labs(y = "Completeness", title = "A") +
 coord_cartesian(ylim= c(-0.07, 0.15)) +
   theme(panel.background = element_blank(),
+        plot.title = element_text(face = 'bold'),
         axis.title.x = element_text(size=14),
         axis.text.x = element_text(size = 14),
         axis.title.y = element_text(size=14),
@@ -345,6 +346,7 @@ p_N2K_nni <- sModelNNI %>%
   labs(y = "NNI", title = "B") +
   coord_cartesian(ylim= c(-0.07, 0.15)) +
   theme(panel.background = element_blank(),
+        plot.title = element_text(face = 'bold'),
         axis.title.x = element_text(size=14),
         axis.text.x = element_text(size = 14),
         axis.title.y = element_text(size=14),
@@ -368,6 +370,7 @@ p_N2K_ev <- sModelEV %>%
   labs(y = "Pielou's Index", title = "C") +
 coord_cartesian(ylim= c(-0.25, 0.15)) +
   theme(panel.background = element_blank(),
+        plot.title = element_text(face = 'bold'),
         axis.title.x = element_text(size=14),
         axis.text.x = element_text(size = 14),
         axis.title.y = element_text(size=14),
@@ -390,13 +393,14 @@ p_pop_nni <- sModelNNI %>%
   labs(y = "NNI", title = "D") +
 coord_cartesian(ylim= c(-0.15, 0.25)) +
   theme(panel.background = element_blank(),
+        plot.title = element_text(face = 'bold'),
         axis.title.x = element_text(size=14),
         axis.text.x = element_text(size = 14),
         axis.title.y = element_text(size=14),
         axis.text.y = element_text(size = 14))
 
 
-p <- p_N2K_comp + p_N2K_nni + p_pop_nni + p_N2K_ev + plot_layout(ncol = 2)
+p <- p_N2K_comp + p_N2K_nni + p_N2K_ev +  p_pop_nni  + plot_layout(ncol = 2)
 
 ggsave(plot = p,
        filename = "gam_map.jpg",
