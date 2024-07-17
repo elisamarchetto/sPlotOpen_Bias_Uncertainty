@@ -33,11 +33,13 @@ p <- ggplot() +
   geom_line(data = d, aes(x = YearDif, y = TU1), color = "black") +
   labs( x = "Years of distance", y = "Temporal precision")
 
-ggsave(plot = p,
-       filename = "curveTU.jpg",
-       width = 5,
-       height = 5,
-       dpi = 600)
+jpeg("curveTU.jpeg",
+width = 5,
+height = 5,
+res = 300, units="in")
+p
+dev.off()
+
 ############ PLOT #############
 rm(p)
 
@@ -125,8 +127,9 @@ s1<- GGstack_TU %>%
 
 
 
-ggsave(plot = s1,
-       filename = "medianTU.jpg",
-       width = 20,
-       height = 20,
-       dpi = 600)
+jpeg("medianTU.jpeg",
+width = 20,
+height = 10,
+res = 300, units="in")
+s1
+dev.off()
