@@ -128,8 +128,9 @@ ggplot()+
         legend.text = element_text(size=12,angle = 0), 
         legend.key.size = unit(0.8, 'cm'))   ->plot
 
-ggsave(plot = plot,
-       filename = "comp.jpg",
-       width = 10,
-       height = 10,
-       dpi = 600)
+jpeg("comp.jpeg",
+     width = 10,
+     height = 10,
+     res = 300, units="in")
+plot
+dev.off()
