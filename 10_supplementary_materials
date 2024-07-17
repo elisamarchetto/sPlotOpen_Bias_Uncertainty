@@ -525,7 +525,7 @@ library(sf)
 library(viridis)
 library(rnaturalearth)
 
-# object "test" of clarkevans.test2 function. The code in 04_prepare_spatial_bias has to be replicated untill line 
+# object "test" of clarkevans.test2 function. The code in 04_prepare_spatial_bias has to be replicated untill line 338 
 test <- readRDS(test.rds)
 
 # return only monte carlo simulations different from NA
