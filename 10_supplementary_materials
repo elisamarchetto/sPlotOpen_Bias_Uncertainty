@@ -510,6 +510,13 @@ geom_sf(aes(fill =last))+
         legend.key.size = unit(0.8, 'cm'))   ->plot2
 p <- plot1 +  plot2 + plot_layout(guides = "collect") & theme(legend.position = "bottom")
 
+jpeg("compSize.jpeg",
+width = 20,
+height = 10,
+res = 300, units="in")
+p
+dev.off()
+
 ################## MAP NNI AND NNI STANDARDIZED EFFECT SIZE #####################
 ## the following code has to be combined with 04_prepare_spatial_bias code ##
 library(tidyverse)
@@ -621,11 +628,12 @@ NNIr_spses %>%
 p <- plot3 + plot4
 
 
-ggsave(plot = p,
-       filename = "nni_ses.jpg",
-       width = 12,
-       height = 12,
-       dpi = 600)
+jpeg("nni_ses.jpeg",
+width = 20,
+height = 10,
+res = 300, units="in")
+p
+dev.off()
 
 ############ NUMBER OF PLOTS #############
 library(tidyverse)
