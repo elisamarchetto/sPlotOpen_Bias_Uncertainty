@@ -696,11 +696,12 @@ nPlotr_sp %>%
           legend.text = element_text(size=12,angle = 0), 
           legend.key.size = unit(0.8, 'cm'))   ->plot
 
-ggsave(plot = plot,
-       filename = "nPlot.jpg",
-       width = 10,
-       height = 10,
-       dpi = 600)
+jpeg("nPlot.jpeg",
+     width = 10,
+     height = 10,
+     res = 300, units="in")
+plot
+dev.off()
 
 ############ NATURA 2000 NETWORK #############
 
@@ -759,12 +760,12 @@ spNat  %>%
         legend.text = element_text(size=12,angle = 0), 
         legend.key.size = unit(0.8, 'cm'))   ->plot
 
-ggsave(plot = plot,
-       filename = "NatMap.jpg",
-       width = 10,
-       height = 10,
-       dpi = 600)
-
+jpeg("NatMap.jpeg",
+     width = 10,
+     height = 10,
+     res = 300, units="in")
+plot
+dev.off()
 
 ################# TEMPORAL UNCERTAINTY MAP ###############
 
@@ -839,10 +840,9 @@ TU_sp %>%
         legend.text = element_text(size=12,angle = 0), 
         legend.key.size = unit(0.8, 'cm'))   ->plot
 
-
-ggsave(plot = plot,
-       filename = "temporal_distance.jpg",
-       width = 10,
-       height = 10,
-       dpi = 600)
-
+jpeg("temporal_distance.jpeg",
+     width = 10,
+     height = 10,
+     res = 300, units="in")
+plot
+dev.off()
