@@ -123,6 +123,7 @@ library(terra)
 library(rnaturalearth)
 library(patchwork)
 
+d <- readRDS("d.rds")
 comp <- readRDS("comp.rds")
 comp <- comp %>% dplyr::select(id, SC) 
 
