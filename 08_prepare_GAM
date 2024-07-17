@@ -402,8 +402,9 @@ coord_cartesian(ylim= c(-0.15, 0.25)) +
 
 p <- p_N2K_comp + p_N2K_nni + p_N2K_ev +  p_pop_nni  + plot_layout(ncol = 2)
 
-ggsave(plot = p,
-       filename = "gam_map.jpg",
-       width = 18,
-       height = 12,
-       dpi = 600)
+jpeg("gam_map.jpeg",
+     width = 18,
+     height = 12,
+     res = 300, units="in")
+p
+dev.off()
