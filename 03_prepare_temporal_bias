@@ -96,8 +96,9 @@ dTB_sp %>%
         legend.key.size = unit(0.8, 'cm'))   ->plot
 
 
-ggsave(plot = plot,
-       filename = "Pielou.jpg",
-       width = 10,
-       height = 10,
-       dpi = 600)
+jpeg("Pielou.jpeg",
+     width = 10,
+     height = 10,
+     res = 300, units="in")
+plot
+dev.off()
