@@ -511,7 +511,7 @@ geom_sf(aes(fill =last))+
 p <- plot1 +  plot2 + plot_layout(guides = "collect") & theme(legend.position = "bottom")
 
 ################## MAP NNI AND NNI STANDARDIZED EFFECT SIZE #####################
-
+## the following code has to be combined with 04_prepare_spatial_bias code ##
 library(tidyverse)
 library(terra)
 library(sf)
