@@ -550,6 +550,12 @@ NNI.NNI_SES.p <- NNI.NNI_SES  %>%
   st_as_sf(coords = c("x", "y"), crs = st_crs(3035)) %>%
   st_transform(crs = st_crs(3035))
 
+r <- rast(resolution=0.5)
+e <- ext(-16.1,40.18, 32.88, 84.73)
+r<- crop(r, e)
+r <- project(r, "EPSG:3035")
+values(r) <- 1:ncell(r)
+
 v <- vect(NNI.NNI_SES.p)
 NNIr <- rasterize(v, r, field="range")
 NNIr_sp <- as.polygons(NNIr, dissolve=FALSE)
