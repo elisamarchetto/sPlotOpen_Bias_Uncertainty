@@ -213,11 +213,12 @@ geom_sf(aes(fill =log(last)))+
 
 p <- plot1 + plot2
 
-ggsave(plot = p,
-       filename = "comp.nplot.jpg",
-       width = 15,
-       height = 12,
-       dpi = 600)
+jpeg("comp.nplot.jpeg",
+width = 20,
+height = 10,
+res = 300, units="in")
+p
+dev.off()
 
 ############ MAP COMPLETENESS FOR PLOT SIZE ##########
 
