@@ -334,7 +334,7 @@ for (i in 1:1121) {
   y5[[i]] <- ppp_obj
 }
 
-test <- map(y5, ~ clarkevans.test2(.x, correction="cdf"))
+test <- map(y5, ~ clarkevans.test2(.x, correction="cdf", method="MonteCarlo"))
 saveRDS(test, "test.rds")
 
 # extract from the output large list the nni values
